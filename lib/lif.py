@@ -3,6 +3,45 @@ import numpy as np
 import numpy.random as rand
 import scipy
 
+import cPickle, gzip
+import random
+from scipy.integrate import quadrature,quad
+# Load the dataset
+f = gzip.open('/home/prashanth/rdd/mnist.pkl.gz', 'rb')
+train_set, valid_set, test_set = cPickle.load(f)
+f.close()
+
+def mnist_spike(lamba,D,kernel):
+    rand_num=random.randint(0,train_set[0].shape[0])
+    mnist_rand=(train_set[0][rand_num]) 
+    label_rand=train_set[1][rand_num]
+    new_var=np.zeros([784,D])
+    for i in range(mnist_rand.shape[0]):
+        x = np.random.uniform(0,1,D)
+        #spike if pixel intensity is grater than 1-lamba*I_i 
+        store_bool = x < (lamba*mnist_rand[i])
+        #new_var[i,:] = store_bool*1
+        new_var[i,:]=np.convolve(store_bool*1,kernel)[0:1000]
+    return new_var
+        
+def activation(u,xw,std,gl,theta):
+    #scipy quadrature
+    #inpstd = std*w
+    y_th = np.divide(theta-xw,std)
+    y_r = np.divide(xw,std)
+    first = np.exp(-u**2+ 2*y_th*u)
+    second = np.exp(-u**2+ 2*y_r*u)
+    integral = 1/u*(first-second)
+
+#    mu=np.diff(mu)
+    return integral
+
+def integrate(xw,std,gl,theta):
+    return quad(activation,0,np.inf,args=(xw, std,gl,theta))
+
+def gradient(mu):
+    return np.diff(mu)
+
 def convolve_online(s, h, kernel, t_offset):
     if len(s.shape) > 1:
         n = s.shape[0]
@@ -56,10 +95,10 @@ class ParamsLIF(object):
         self.tau = tau          #Time constant
         self.c = c              #Correlation between noise inputs
         self.sigma = sigma      #Std dev of noise process
-
 class ParamsLIF_Recurrent(object):
-    def __init__(self, kernel, dt = 0.001, tr = 0.003, mu = 1, reset = 0, xsigma = 1, n1 = 2, n2 = 10, tau = 1,\
-        c = 0.99, sigma = 20):
+    
+    def __init__(self, kernel, dt = 0.001, tr = 0.003, mu = 1, reset = 0, xsigma = 1, n1 = 2, n2 = 10, tau = 1,
+        c = 0.99, sigma = 20, sigma1 = 0.1, sigma2 = 0.1,iterations = 2):
 
         self.dt = dt            #Step size
         self.tr = tr            #Refractory period
@@ -73,7 +112,10 @@ class ParamsLIF_Recurrent(object):
         self.c = c              #Correlation between noise inputs
         self.sigma = sigma      #Std dev of noise process
         self.kernel = kernel    #Kernel to apply to spike trains
-
+        self.iterations=iterations
+        self.sigma1=sigma1
+        self.sigma2=sigma2
+        
 class ParamsLSM(ParamsLIF):
 
     def __init__(self, t = 1, q = 100, p = 1, tau_s = .04, I0 = 20, spectral_radius = 0.95, **kwargs):
@@ -552,17 +594,20 @@ class LIF_Recurrent(object):
         self.times = np.linspace(0,self.t,self.T)
         
         #Input signal
-        self.x = 0
+        self.x = mnist_spike(lamba=0.02,D=self.T,kernel=self.params.kernel)
         #Input to each neuron in first layer weights
-        self.W1 = 25*np.ones(self.params.n1)
-        self.W2 = 2*np.ones(self.params.n2)
-
+        self.params.sigma1=10
+        self.params.sigma2=2
+        
+        self.W1 = self.params.sigma1*np.ones(self.params.n1)
+        self.W2 = self.params.sigma2*np.ones(self.params.n2)
+        self.W=50*np.random.randn(self.params.n1, self.x.shape[0])+10
         #The feedforward/recurrent connections
         self.U = np.zeros((self.params.n, self.params.n))        
         self.sh = np.zeros((self.params.n, self.T))
         #self.U[0:self.params.n1, self.params.n1:] = 500*np.random.randn(self.params.n1, self.params.n2)
-        self.U[self.params.n1:, 0:self.params.n1] = 200*np.random.randn(self.params.n2, self.params.n1)+100
-
+        self.U[self.params.n1:, 0:self.params.n1] = 50*np.random.randn(self.params.n2, self.params.n1)+10
+        
         self.keepstate = True
         self.vt = np.zeros(self.params.n)
         self.ut = np.zeros(self.params.n)
@@ -578,13 +623,16 @@ class LIF_Recurrent(object):
         self.count = 0
 
     def simulate(self, deltaT = None):
+        
         #if deltaT is provided then in blocks of deltaT we compute the counterfactual trace... the evolution without spiking.
-        v = np.zeros((self.params.n,self.T))
+        inp=np.zeros((self.params.iterations,784,self.T))
+        v = np.zeros((self.params.iterations,self.params.n,self.T))
+
         if deltaT is not None:
             u = np.zeros((self.params.n,self.T))
         else:
             u = None
-        h = np.zeros((self.params.n,self.T))
+        h = np.zeros((self.params.iterations,self.params.n,self.T))
         if not self.keepstate:
             self.vt = np.zeros(self.params.n)
             self.ut = np.zeros(self.params.n)
@@ -606,35 +654,68 @@ class LIF_Recurrent(object):
             
         self.count += 1
         #Simulate t seconds
-        for i in range(self.T):
-            #ut is not reset by spiking. ut is set to vt at the start of each block of deltaT
-            if deltaT is not None:
-                if i%deltaT == 0:
-                    ut = vt
-            dv = -vt/self.params.tau + np.dot(self.U,sh[:,i])
-            dv[0:self.params.n1] += np.multiply(self.W1,(self.x + xi[0,i] + xi[1:,i]))
-            dv[self.params.n1:] += np.multiply(self.W2,(xi_l2[:,i]))
-            vt = vt + self.params.dt*dv
-            ut = ut + self.params.dt*dv
-            #Find neurons that spike
-            s = vt>self.params.mu
-            #Update sh based on spiking.....
-            for s_idx in np.nonzero(s)[0]:
-                convolve_online_v2(sh, s_idx, i, self.params.kernel, 0)
-            #Save the voltages and spikes
-            h[:,i] = s.astype(int)
-            v[:,i] = vt
-            if deltaT is not None:
-                u[:,i] = ut
-            #Make spiking neurons refractory
-            r[s] = self.Tr
-            #Set the refractory neurons to v_reset
-            vt[r>0] = self.params.reset
-            vt[vt<self.params.reset] = self.params.reset
-            ut[ut<self.params.reset] = self.params.reset
-            #Decrement the refractory counters
-            r[r>0] -= 1
-
-        self.vt = vt
-        #self.sh = sh
-        return (v, h, u, sh)
+       
+        for iter in range(self.params.iterations):
+            self.x=mnist_spike(lamba=0.02,D=self.T,kernel=self.params.kernel)
+            inp[iter,:,:]=self.x
+            print(iter)
+           
+                #print(pix)
+            for i in range(self.T):
+                #ut is not reset by spiking. ut is set to vt at the start of each block of deltaT
+                if deltaT is not None:
+                    if i%deltaT == 0:
+                        ut = vt
+                dv = -vt/self.params.tau + np.dot(self.U,sh[:,i])
+                dv[0:self.params.n1] += np.dot(self.W,(self.x[:,i])) + np.multiply(self.W1, xi[0,i] + xi[1:,i])
+                dv[self.params.n1:] += np.multiply(self.W2,(xi_l2[:,i]))
+                vt = vt + self.params.dt*dv
+                ut = ut + self.params.dt*dv
+                #Find neurons that spike
+                s = vt>self.params.mu
+                #Update sh based on spiking.....
+                for s_idx in np.nonzero(s)[0]:
+                    convolve_online_v2(sh, s_idx, i, self.params.kernel, 0)
+                    #Save the voltages and spikes
+                h[iter,:,i] = s.astype(int)
+                v[iter,:,i] = vt
+                if deltaT is not None:
+                    u[:,i] = ut
+                    #Make spiking neurons refractory
+                r[s] = self.Tr
+                #Set the refractory neurons to v_reset
+                vt[r>0] = self.params.reset
+                vt[vt<self.params.reset] = self.params.reset
+                ut[ut<self.params.reset] = self.params.reset
+                #Decrement the refractory counters
+                r[r>0] -= 1
+            
+            self.vt = vt
+            #self.sh = sh
+            
+        return (inp,v, h, u, sh)
+                                     
+        
+    def backprop(self,epoch=3):
+        std=20
+        gl=0.1
+        theta=0.5
+        print(self.W.shape)
+        print(self.x.shape)
+        print(self.U.shape)
+        vec_integral=np.vectorize(integrate)
+        for ep in range(epoch):
+            xw=np.dot(self.W,self.x)
+            hidden=vec_integral(xw, self.params.sigma1,gl,theta)
+            print(hidden)
+            hidU=np.dot(hidden,self.U)
+            y_hat=vec_integral(hidU, self.params.sigma2,gl,theta)
+            e=y_hat-y
+            dLdu=np.multiply(e,y_hat)
+            dLdw=np.multiply(dLdu,gradient(activation(self.x, self.W, std, gl, u,theta)))
+            w=w-self.eta*dLdw
+            u=u-self.eta*dLdu
+        return  
+     
+                                     
+                               
