@@ -25,7 +25,5 @@ N = 1000 #Number of iterations
 eval_every = 3
 for j in range(N):
     print("Iteration: %d"%j)
-    lif.train_BP(DeltaT)
-    if j % 3 == 0:
-        loss, accuracy = lif.eval()
-        print("Loss: %f, accuracy: %f"%(loss, accuracy))
+    train_loss, train_acc = lif.train_BP()
+    print("Training loss: %f, training accuracy: %f"%(train_loss, train_acc))

@@ -13,7 +13,7 @@ train_set, valid_set, test_set = cPickle.load(f)
 f.close()
 
 def mnist_spike(lamba, D, kernel):
-    rand_num = random.randint(0, train_set[0].shape[0])
+    rand_num = random.randint(0, train_set[0].shape[0]-1)
     mnist_rand = (train_set[0][rand_num]) 
     label_rand = train_set[1][rand_num]
     new_var = np.zeros([784, D])
@@ -84,7 +84,7 @@ def firingrate_LIF(params, W, S):
 
 class ParamsLIF_Recurrent(object):    
     def __init__(self, kernel, dt = 0.001, tr = 0.003, mu = 1, reset = 0, xsigma = 1, n1 = 100, n2 = 10, tau = 1,
-        c = 0.99, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 5e-3):
+        c = 0.99, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 1e-1):
 
         self.dt = dt                    #Step size
         self.tr = tr                    #Refractory period
@@ -214,7 +214,7 @@ class LIF_Recurrent(object):
             y_hot[idx,y[idx]] = 1.0
 
         #Backprop
-        e2 = np.multiply((y_hot - output), self.sigma_prime(np.matmul(U, hidden.T)).T)
+        e2 = np.multiply((output - y_hot), self.sigma_prime(np.matmul(U, hidden.T)).T)
         e1 = np.multiply(np.matmul(e2, U), self.sigma_prime(np.matmul(W, mean_inp.T)).T)
 
         #Gradient updates
@@ -223,14 +223,17 @@ class LIF_Recurrent(object):
         U -= self.params.eta*gradU
         W -= self.params.eta*gradW
 
-        #self.W = W
-        #self.U[self.params.n1:, 0:self.params.n1] = U
+        loss = np.mean(np.power((y_hot - output),2)/2)
+        acc = 100*np.mean(np.argmax(output,1) == y)
 
-    def train_BP(self, DeltaT):
+        return loss, acc
+
+    def train_BP(self):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate()
         #Update weights
-        self.backprop(inp, sh, y)
+        loss, acc = self.backprop(inp, sh, y)
+        return loss, acc
 
     def feedbackalignment(self, inp, sh, y):
         #Get averaged activity for each layer and input
@@ -248,7 +251,7 @@ class LIF_Recurrent(object):
             y_hot[idx,y[idx]] = 1.0
 
         #Feedback alignment
-        e2 = np.multiply((y_hot - output), self.sigma_prime(np.matmul(U, hidden.T)).T)
+        e2 = np.multiply((output - y_hot), self.sigma_prime(np.matmul(U, hidden.T)).T)
         e1 = np.multiply(np.matmul(e2, B), self.sigma_prime(np.matmul(W, mean_inp.T)).T)
 
         #Gradient updates
@@ -257,11 +260,17 @@ class LIF_Recurrent(object):
         U -= self.params.eta*gradU
         W -= self.params.eta*gradW
 
-    def train_FA(self, DeltaT):
+        loss = np.mean(np.power((y_hot - output),2)/2)
+        acc = 100*np.mean(np.argmax(output,1) == y)
+
+        return loss, acc
+
+    def train_FA(self):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate()
         #Update weights
-        self.feedbackalignment(inp, sh, y)
+        loss, acc = self.feedbackalignment(inp, sh, y)
+        return loss, acc
 
     def eval(self):
         raise NotImplementedError
