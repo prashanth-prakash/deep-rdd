@@ -32,24 +32,6 @@ def mnist_spike(lamba, D, kernel, test_data = False):
         store_bool = (x < (lamba*mnist_rand[i])).astype(float)
         new_var[i,:] = np.convolve(store_bool, kernel)[0:1000]
     return new_var, label_rand
-        
-def activation(u,xw,std,gl,theta):
-    #scipy quadrature
-    #inpstd = std*w
-    y_th = np.divide(theta-xw,std)
-    y_r = np.divide(xw,std)
-    first = np.exp(-u**2+ 2*y_th*u)
-    second = np.exp(-u**2+ 2*y_r*u)
-    integral = 1/u*(first-second)
-
-#    mu=np.diff(mu)
-    return integral
-
-def integrate(xw,std,gl,theta):
-    return quad(activation,0,np.inf,args=(xw, std,gl,theta))
-
-def gradient(mu):
-    return np.diff(mu)
 
 def convolve_online(s, h, kernel, t_offset):
     if len(s.shape) > 1:
@@ -74,22 +56,6 @@ def convolve_online_v2(s, sp_idx, time_idx, kernel, t_offset):
     en = min(s.shape[1], st + kernel.shape[0])
     ln = en-st
     s[sp_idx, st:en] += kernel[0:ln]
-
-def firingrate_LIF(params, W, S):
-    #Computes the firing rate as a function of weights W and mean inputs S
-    tau = params.tau
-    Vth = params.mu
-    Vr = params.reset
-    Vrest = params.reset
-    dt = params.dt
-    sigma_xi = params.sigma*dt
-    I = np.dot(W, S)
-    sigma = sigma_xi*np.sqrt(np.sum(W**2))
-    Yth = (Vth - Vrest - I)/sigma
-    Yr = (Vr - Vrest - I)/sigma
-    f = lambda u: (1/u)*np.exp(-u**2)*(np.exp(2*Yth*u)-np.exp(2*Yr*u))
-    quad = scipy.integrate.quad(f, 0, np.inf)[0]
-    return 1/(tau*quad)
 
 class ParamsLIF_Recurrent(object):    
     def __init__(self, kernel, dt = 0.001, tr = 0.003, mu = 1, reset = 0, xsigma = 1, n1 = 100, n2 = 10, tau = 1,
@@ -385,11 +351,56 @@ class LIF_Recurrent(object):
 
         return loss, acc
 
+    def rdd(self, inp, sh, y):
+        #Get averaged activity for each layer and input
+        mean_activity = np.mean(sh, 2)
+        mean_inp = np.mean(inp,2)
+        hidden = mean_activity[:,0:self.params.n1]
+        output = mean_activity[:,self.params.n1:]
+        U = self.U[self.params.n1:, 0:self.params.n1]
+        B = self.B
+
+        #Convert to one-hot
+        y_hot = np.zeros((self.params.batch_size, self.params.n2))
+        for idx in range(self.params.batch_size):
+            y_hot[idx,y[idx]] = 1.0
+
+        #Backprop
+        e2 = np.multiply((output - y_hot), self.sigma_prime(np.matmul(U, hidden.T)).T)
+
+        #The RDD estimator... still to update!
+        lambd = 1
+
+        #Feedback weight updates
+        gradB = np.multiply((np.matmul(e2, B) - lambd), e2)
+        B -= self.params.eta_B*gradB
+
+        loss = np.mean(np.power((y_hot - output),2)/2)
+        acc = 100*np.mean(np.argmax(output,1) == y)
+
+        return loss, acc
+
     def train_FA(self):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate()
         #Update weights
         loss, acc = self.feedbackalignment(inp, sh, y)
+        return loss, acc
+
+    def train_RDD(self):
+        #Simulate a minibatch
+        (inp, v, h, u, sh, y) = self.simulate()
+        #Update feedback weights
+        loss, acc = self.rdd(inp, sh, y)
+        #Update remaining weights
+        loss, acc = self.feedbackalignment(inp, sh, y)
+        return loss, acc
+
+    def train_just_RDD(self):
+        #Simulate a minibatch
+        (inp, v, h, u, sh, y) = self.simulate()
+        #Update feedback weights
+        loss, acc = self.rdd(inp, sh, y)
         return loss, acc
 
     def eval(self):
