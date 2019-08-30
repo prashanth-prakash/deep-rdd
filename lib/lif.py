@@ -6,16 +6,25 @@ import scipy
 import cPickle, gzip
 import random
 from scipy.integrate import quadrature, quad
+import pickle
+
+import multiprocessing
 
 # Load the dataset
 f = gzip.open('./mnist.pkl.gz', 'rb')
 train_set, valid_set, test_set = cPickle.load(f)
 f.close()
 
-def mnist_spike(lamba, D, kernel):
-    rand_num = random.randint(0, train_set[0].shape[0]-1)
-    mnist_rand = (train_set[0][rand_num]) 
-    label_rand = train_set[1][rand_num]
+def mnist_spike(lamba, D, kernel, test_data = False):
+    if test_data:
+        rand_num = random.randint(0, test_set[0].shape[0]-1)
+        mnist_rand = (test_set[0][rand_num]) 
+        label_rand = test_set[1][rand_num]
+    else:
+        rand_num = random.randint(0, train_set[0].shape[0]-1)
+        mnist_rand = (train_set[0][rand_num]) 
+        label_rand = train_set[1][rand_num]
+
     new_var = np.zeros([784, D])
     for i in range(mnist_rand.shape[0]):
         x = np.random.uniform(0, 1, D)
@@ -84,7 +93,7 @@ def firingrate_LIF(params, W, S):
 
 class ParamsLIF_Recurrent(object):    
     def __init__(self, kernel, dt = 0.001, tr = 0.003, mu = 1, reset = 0, xsigma = 1, n1 = 100, n2 = 10, tau = 1,
-        c = 0.99, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 1e-1):
+        c = 0.99, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 5e-1):
 
         self.dt = dt                    #Step size
         self.tr = tr                    #Refractory period
@@ -106,8 +115,19 @@ class ParamsLIF_Recurrent(object):
 
 class LIF_Recurrent(object):
 
-    def __init__(self, params, t = 1):
+    def __init__(self, params, t = 1, parallel = False, n_proc = 4):
+        self.parallel = parallel
+
+        #out1, out2, out3 = zip(*pool.map(calc_stuff, range(0, 10 * offset, offset)))
         self.setup(params, t)
+
+#    def __getstate__(self):
+#        self_dict = self.__dict__.copy()
+#        del self_dict['pool']
+#        return self_dict
+#
+#    def __setstate__(self, state):
+#        self.__dict__.update(state)
 
     def setup(self, params = None, t = None):
         if params is not None:
@@ -133,7 +153,38 @@ class LIF_Recurrent(object):
         self.B = 50*np.random.randn(self.params.n2, self.params.n1)+10
         #self.U[0:self.params.n1, self.params.n1:] = 500*np.random.randn(self.params.n1, self.params.n2)
 
-    def simulate(self, deltaT = None):
+    def save(self, fn_out):
+        to_save = {
+            'params': self.params,
+            'W1': self.W1,
+            'W2': self.W2,
+            'W': self.W,
+            'U': self.U,
+            'B': self.B
+        }
+        pickle.dump(to_save, open(fn_out, "wb"))
+
+    def restore(self, fn_in):
+        with open(fn_in, 'rb') as f:
+            data = pickle.load(f)
+            self.params = data['params']
+            self.W1 = data['W1']
+            self.W2 = data['W2']
+            self.W = data['W']
+            self.U = data['U']
+            self.B = data['B']
+
+    def simulate(self, deltaT = None, pool = None, test_data = False):
+        if self.parallel and pool is not None:
+            #(inp, v, h, u, sh, y) = self.simulate_parallel
+            results = [pool.apply(self.simulate_parallel, args=(deltaT,)) for x in range(8)]
+            #Combine results and return
+
+            return results
+        else:
+            return self.simulate_single(deltaT, test_data = test_data)
+
+    def simulate_single(self, deltaT = None, test_data = False):
 
         inp = np.zeros((self.params.batch_size, self.params.n_input, self.T))
         v = np.zeros((self.params.batch_size, self.params.n, self.T))
@@ -156,6 +207,75 @@ class LIF_Recurrent(object):
         xi[0,:] = xi[0,:]*np.sqrt(self.params.c)
         xi[1:,:] = xi[1:,:]*np.sqrt(1-self.params.c)
         xi_l2 = self.params.sigma*rand.randn(self.params.batch_size, self.params.n2, self.T)/np.sqrt(self.params.tau)
+
+        #Run through each item in batch
+        for idx in range(self.params.batch_size):
+            
+            x, label = mnist_spike(lamba = 0.02, D = self.T, kernel = self.params.kernel, test_data = test_data)
+            inp[idx,:,:] = x
+            y[idx] = label
+
+            #Simulate t seconds
+            for i in range(self.T):
+                #ut is not reset by spiking. ut is set to vt at the start of each block of deltaT
+                if deltaT is not None:
+                    if i%deltaT == 0:
+                        ut = vt
+                dv = -vt/self.params.tau + np.dot(self.U, sh[idx,:,i])
+                dv[0:self.params.n1] += np.dot(self.W, (x[:,i])) + np.multiply(self.W1, xi[idx,0,i] + xi[idx,1:,i])
+                dv[self.params.n1:] += np.multiply(self.W2, xi_l2[idx,:,i])
+                vt = vt + self.params.dt*dv
+                ut = ut + self.params.dt*dv
+                #Find neurons that spike
+                s = vt>self.params.mu
+                #Update sh based on spiking.....
+                for s_idx in np.nonzero(s)[0]:
+                    convolve_online_v2(sh[idx,:,:], s_idx, i, self.params.kernel, 0)
+                #Save the voltages and spikes
+                h[idx,:,i] = s.astype(int)
+                v[idx,:,i] = vt
+                if deltaT is not None:
+                    u[idx,:,i] = ut
+                #Make spiking neurons refractory
+                r[s] = self.Tr
+                #Set the refractory neurons to v_reset
+                vt[r>0] = self.params.reset
+                vt[vt<self.params.reset] = self.params.reset
+                ut[ut<self.params.reset] = self.params.reset
+                #Decrement the refractory counters
+                r[r>0] -= 1
+
+        return (inp, v, h, u, sh, y)                                     
+
+    def simulate_parallel(self, deltaT = None):
+
+        print("Simulating!")
+
+        inp = np.zeros((self.params.batch_size, self.params.n_input, self.T))
+        v = np.zeros((self.params.batch_size, self.params.n, self.T))
+        h = np.zeros((self.params.batch_size, self.params.n, self.T))
+        sh = np.zeros((self.params.batch_size, self.params.n, self.T))
+        y = np.zeros(self.params.batch_size, dtype = int)
+
+        #if deltaT is provided then in blocks of deltaT we compute the counterfactual trace... the evolution without spiking.
+        if deltaT is not None:
+            u = np.zeros((self.params.batch_size, self.params.n, self.T))
+        else:
+            u = None
+
+        vt = np.zeros(self.params.n)
+        ut = np.zeros(self.params.n)
+        r = np.zeros(self.params.n)
+
+        #Generate new noise with each sim
+        xi = self.params.sigma*rand.randn(self.params.batch_size, self.params.n1+1, self.T)/np.sqrt(self.params.tau)
+        xi[0,:] = xi[0,:]*np.sqrt(self.params.c)
+        xi[1:,:] = xi[1:,:]*np.sqrt(1-self.params.c)
+        xi_l2 = self.params.sigma*rand.randn(self.params.batch_size, self.params.n2, self.T)/np.sqrt(self.params.tau)
+
+        #Run a number of simulations in parallel
+
+        #out1, out2, out3 = zip(*pool.map(calc_stuff, range(0, 10 * offset, offset)))
 
         #Run through each item in batch
         for idx in range(self.params.batch_size):
@@ -194,7 +314,7 @@ class LIF_Recurrent(object):
                 #Decrement the refractory counters
                 r[r>0] -= 1
 
-        return (inp, v, h, u, sh, y)                                     
+        return (inp, v, h, u, sh, y)    
 
     def sigma_prime(self, x):
         return (x>0).astype(float)
@@ -273,4 +393,20 @@ class LIF_Recurrent(object):
         return loss, acc
 
     def eval(self):
-        raise NotImplementedError
+        results = self.simulate(test_data = True)
+        (inp, v, h, u, sh, y) = results
+
+        mean_activity = np.mean(sh, 2)
+        mean_inp = np.mean(inp,2)
+        hidden = mean_activity[:,0:self.params.n1]
+        output = mean_activity[:,self.params.n1:]
+
+        #Convert to one-hot
+        y_hot = np.zeros((self.params.batch_size, self.params.n2))
+        for idx in range(self.params.batch_size):
+            y_hot[idx,y[idx]] = 1.0
+
+        loss = np.mean(np.power((y_hot - output),2)/2)
+        acc = 100*np.mean(np.argmax(output,1) == y)
+        
+        return loss, acc, results
