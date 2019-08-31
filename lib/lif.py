@@ -86,17 +86,7 @@ class LIF_Recurrent(object):
 
     def __init__(self, params, t = 1, parallel = False, n_proc = 4):
         self.parallel = parallel
-
-        #out1, out2, out3 = zip(*pool.map(calc_stuff, range(0, 10 * offset, offset)))
         self.setup(params, t)
-
-#    def __getstate__(self):
-#        self_dict = self.__dict__.copy()
-#        del self_dict['pool']
-#        return self_dict
-#
-#    def __setstate__(self, state):
-#        self.__dict__.update(state)
 
     def setup(self, params = None, t = None):
         if params is not None:
@@ -322,13 +312,6 @@ class LIF_Recurrent(object):
 
         return loss, acc
 
-    def train_BP(self):
-        #Simulate a minibatch
-        (inp, v, h, u, sh, y) = self.simulate()
-        #Update weights
-        loss, acc = self.backprop(inp, sh, y, h)
-        return loss, acc
-
     def feedbackalignment(self, inp, sh, y, h):
         #Get averaged activity for each layer and input
         mean_activity = np.mean(sh, 2)
@@ -362,7 +345,19 @@ class LIF_Recurrent(object):
         loss = np.mean(np.power((y_hot - output),2)/2)
         acc = 100*np.mean(np.argmax(output,1) == y)
 
-        return loss, acc
+        #Compute metrics
+        alignment = 0
+        frob_err = 0
+        for idx in range(self.params.batch_size):
+            f1 = np.linalg.norm(np.dot(e2[idx,:], U))
+            f2 = np.linalg.norm(np.dot(e2[idx,:], B))
+            alignment += np.dot(e2[idx,:], np.dot(U, np.dot(B.T, e2[idx,:].T)))/f1/f2
+            frob_err += np.linalg.norm(U - B, 'fro')
+        alignment /= self.params.batch_size
+        frob_err /= self.params.batch_size
+
+        metrics = (alignment, frob_err)
+        return loss, acc, metrics
 
     def rdd(self, inp, sh, y, h, v, u, deltaT):
         #Get averaged activity for each layer and input
@@ -421,30 +416,49 @@ class LIF_Recurrent(object):
         loss = np.mean(np.power((y_hot - output),2)/2)
         acc = 100*np.mean(np.argmax(output,1) == y)
 
+        #Compute metrics
+        alignment = 0
+        frob_err = 0
+        for idx in range(self.params.batch_size):
+            f1 = np.linalg.norm(np.dot(e2[idx,:], U))
+            f2 = np.linalg.norm(np.dot(e2[idx,:], B))
+            alignment += np.dot(e2[idx,:], np.dot(U, np.dot(B.T, e2[idx,:].T)))/f1/f2
+            frob_err += np.linalg.norm(U - B, 'fro')
+        alignment /= self.params.batch_size
+        frob_err /= self.params.batch_size
+
+        metrics = (alignment, frob_err)
+        return loss, acc, metrics
+
+    def train_BP(self):
+        #Simulate a minibatch
+        (inp, v, h, u, sh, y) = self.simulate()
+        #Update weights
+        loss, acc = self.backprop(inp, sh, y, h)
         return loss, acc
 
     def train_FA(self):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate()
         #Update weights
-        loss, acc = self.feedbackalignment(inp, sh, y, h)
-        return loss, acc
+        loss, acc, metrics = self.feedbackalignment(inp, sh, y, h)
+        return loss, acc, metrics
 
     def train_RDD(self, deltaT):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate(deltaT)
         #Update feedback weights
-        loss, acc = self.rdd(inp, sh, y, h, v, u, deltaT)
+        loss, acc, metrics = self.rdd(inp, sh, y, h, v, u, deltaT)
         #Update remaining weights
-        loss, acc = self.feedbackalignment(inp, sh, y, h)
-        return loss, acc
+        loss, acc, _ = self.feedbackalignment(inp, sh, y, h)
+        return loss, acc, metrics
 
     def train_just_RDD(self):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate(self.params.deltaT)
         #Update feedback weights
-        loss, acc = self.rdd(inp, sh, y, h, v, u)
-        return loss, acc
+        loss, acc, metrics = self.rdd(inp, sh, y, h, v, u, deltaT)
+        return loss, acc, metrics
 
     def eval(self):
         results = self.simulate(test_data = True)

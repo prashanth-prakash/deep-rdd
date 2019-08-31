@@ -1,6 +1,6 @@
 import numpy as np
 import multiprocessing as mp
-
+import pickle
 from lib.lif import LIF_Recurrent, ParamsLIF_Recurrent
 
 tau_s = 0.020
@@ -15,73 +15,38 @@ exp_filter = np.exp(-t_filter/tau_s)
 exp_filter = exp_filter/np.sum(exp_filter)
 ds = exp_filter[0]
 
-params = ParamsLIF_Recurrent(exp_filter, dt = dt)
-lif = LIF_Recurrent(params, t = t, parallel = parallel)
+M = 3       #Number of repetitions
+N = 2000    #Number of iterations
+batch_size = 32
 
-if parallel:
-    pool = mp.Pool(processes = n_proc)
+model_out = './results/spiking_rdd_M_%d_N_%d_batchsize_%d.pkl'%(M, N, batch_size)
+results_out = './results/spiking_rdd_M_%d_N_%d_batchsize_%d_results.pkl'%(M, N, batch_size)
 
-N = 1000 #Number of iterations
-fn_out = './results/spiking_rdd_N_%d_batchsize_%d.pkl'%(N, params.batch_size)
+losses = np.zeros((M,N))
+accs = np.zeros((M,N))
+alignments = np.zeros((M,N))
+frob_errs = np.zeros((M,N))
 
-#Test out the train_RDD params
-#self = lif
-#(inp, v, h, u, sh, y) = self.simulate(deltaT)
-#mean_activity = np.mean(sh, 2)
-#mean_inp = np.mean(inp,2)
-#hidden = mean_activity[:,0:self.params.n1]
-#
-##Filtered spike trains
-#output = mean_activity[:,self.params.n1:]
-##Number of spikes in window...
-##output = np.sum(h,2)[:,self.params.n1:]
-#
-#U = self.U[self.params.n1:, 0:self.params.n1]
-#B = self.B
-#
-##Convert to one-hot
-#y_hot = np.zeros((self.params.batch_size, self.params.n2))
-#for idx in range(self.params.batch_size):
-#    y_hot[idx,y[idx]] = 1.0
-#
-##Backprop
-#e2 = np.multiply((output - y_hot), self.sigma_prime(np.matmul(U, hidden.T)).T)
-#
-##Compute matrix R
-##Compute the BT vector... 32*20 = 640
-#output_all = sh[:,self.params.n1:]
-#output_split = output_all.reshape((self.params.batch_size, self.params.n2, -1, deltaT))
-#output_end = output_split[:,:,:,-1]
-#n_rdd_bins = output_end.shape[2]
-#y_hot_dup = np.repeat(y_hot[...,None], n_rdd_bins, axis=2)
-#loss_fine = np.sum(np.power((y_hot_dup - output_end),2)/2,1)
-#
-##Compute RDD indicator function
-##Dimensions BT x n1
-##Compute z for the n1 neurons
-#p = 0.2
-#z = np.max(u.reshape((self.params.batch_size, self.params.n, -1, deltaT)), 3).transpose((0,2,1))[:,:,0:self.params.n1]
-#almost_spike = (z < 1) & (z > 1-p)
-#barely_spike = (z > 1) & (z < 1+p)
-#
-#n_almost_spike = np.sum(almost_spike, 1)
-#n_barely_spike = np.sum(barely_spike, 1)
-#
-##Take averages
-#ave_loss_almost = np.zeros(n_barely_spike.shape)
-#ave_loss_barely = np.zeros(n_barely_spike.shape)
-#for idx_b in range(self.params.batch_size):
-#	for idx_n in range(self.params.n1):
-#		if n_almost_spike[idx_b,idx_n] > 0:
-#			ave_loss_almost[idx_b,idx_n] = np.sum(np.multiply(loss_fine[idx_b,:], almost_spike[idx_b,:,idx_n]))/n_almost_spike[idx_b,idx_n]
-#		if n_barely_spike[idx_b,idx_n] > 0:
-#			ave_loss_barely[idx_b,idx_n] = np.sum(np.multiply(loss_fine[idx_b,:], barely_spike[idx_b,:,idx_n]))/n_barely_spike[idx_b,idx_n]
-#causal_effect = ave_loss_barely - ave_loss_almost
+for i in range(M):
+    print("Repeat: %d/%d"%(i+1,M))
+    params = ParamsLIF_Recurrent(exp_filter, dt = dt, batch_size = batch_size)
+    lif = LIF_Recurrent(params, t = t, parallel = parallel)
+    for j in range(N):
+        print("Iteration: %d"%j)
+        train_loss, train_acc, metrics = lif.train_RDD(deltaT)
+        alignment, frob_err = metrics
+        print("Training loss: %f, training accuracy: %f"%(train_loss, train_acc))
+        losses[i,j] = train_loss
+        accs[i,j] = train_acc
+        alignments[i,j] = alignment
+        frob_errs[i,j] = frob_err
 
-for j in range(N):
-    print("Iteration: %d"%j)
-    train_loss, train_acc = lif.train_RDD(deltaT)
-    print("Training loss: %f, training accuracy: %f"%(train_loss, train_acc))
-
-#Save weights and such...
-lif.save(fn_out)
+#Save weights and results
+lif.save(model_out)
+to_save = {
+    'losses': losses,
+    'accs': accs,
+    'alignment': alignments,
+    'frob_errs': frob_err
+}
+pickle.dump(to_save, open(results_out, "wb"))
