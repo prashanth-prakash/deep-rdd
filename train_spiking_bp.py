@@ -33,7 +33,7 @@ for i in range(M):
     lif = LIF_Recurrent(params, t = t, parallel = parallel)
     for j in range(N):
         print("Iteration: %d"%j)
-        train_loss, train_acc = lif.train_BP(deltaT)
+        train_loss, train_acc = lif.train_BP()
         print("Training loss: %f, training accuracy: %f"%(train_loss, train_acc))
         losses[i,j] = train_loss
         accs[i,j] = train_acc

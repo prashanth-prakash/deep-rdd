@@ -453,9 +453,9 @@ class LIF_Recurrent(object):
         loss, acc, _ = self.feedbackalignment(inp, sh, y, h)
         return loss, acc, metrics
 
-    def train_just_RDD(self):
+    def train_just_RDD(self, deltaT):
         #Simulate a minibatch
-        (inp, v, h, u, sh, y) = self.simulate(self.params.deltaT)
+        (inp, v, h, u, sh, y) = self.simulate(deltaT)
         #Update feedback weights
         loss, acc, metrics = self.rdd(inp, sh, y, h, v, u, deltaT)
         return loss, acc, metrics
