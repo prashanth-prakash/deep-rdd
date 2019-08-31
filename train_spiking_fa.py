@@ -41,12 +41,12 @@ for i in range(M):
         alignments[i,j] = alignment
         frob_errs[i,j] = frob_err
 
-#Save weights and results
-lif.save(model_out)
-to_save = {
-    'losses': losses,
-    'accs': accs,
-    'alignment': alignments,
-    'frob_errs': frob_err
-}
-pickle.dump(to_save, open(results_out, "wb"))
+    #Save weights and results with each run...
+    lif.save(model_out)
+    to_save = {
+        'losses': losses,
+        'accs': accs,
+        'alignment': alignments,
+        'frob_errs': frob_err
+    }
+    pickle.dump(to_save, open(results_out, "wb"))
