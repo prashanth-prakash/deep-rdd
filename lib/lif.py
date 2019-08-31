@@ -59,7 +59,8 @@ def convolve_online_v2(s, sp_idx, time_idx, kernel, t_offset):
 
 class ParamsLIF_Recurrent(object):    
     def __init__(self, kernel, dt = 0.001, tr = 0.003, mu = 1, reset = 0, xsigma = 1, n1 = 100, n2 = 10, tau = 1,
-        c = 0.99, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 5e-1):
+        c = 0.99, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 5e-1, eta_B = 0,
+        p = 0.2):
 
         self.dt = dt                    #Step size
         self.tr = tr                    #Refractory period
@@ -78,6 +79,8 @@ class ParamsLIF_Recurrent(object):
         self.sigma1 = sigma1
         self.sigma2 = sigma2
         self.eta = eta                  #Learning rate
+        self.eta_B = eta_B              #Feedback weights learning rate
+        self.p = p                      #RDD window size
 
 class LIF_Recurrent(object):
 
@@ -285,12 +288,17 @@ class LIF_Recurrent(object):
     def sigma_prime(self, x):
         return (x>0).astype(float)
 
-    def backprop(self, inp, sh, y):
+    def backprop(self, inp, sh, y, h):
         #Get averaged activity for each layer and input
         mean_activity = np.mean(sh, 2)
         mean_inp = np.mean(inp,2)
         hidden = mean_activity[:,0:self.params.n1]
+
+        #Filtered spike trains
         output = mean_activity[:,self.params.n1:]
+        #Number of spikes in window...
+        #output = np.sum(h,2)[:,self.params.n1:]
+
         W = self.W
         U = self.U[self.params.n1:, 0:self.params.n1]
 
@@ -318,15 +326,20 @@ class LIF_Recurrent(object):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate()
         #Update weights
-        loss, acc = self.backprop(inp, sh, y)
+        loss, acc = self.backprop(inp, sh, y, h)
         return loss, acc
 
-    def feedbackalignment(self, inp, sh, y):
+    def feedbackalignment(self, inp, sh, y, h):
         #Get averaged activity for each layer and input
         mean_activity = np.mean(sh, 2)
         mean_inp = np.mean(inp,2)
         hidden = mean_activity[:,0:self.params.n1]
+        
+        #Filtered spike trains
         output = mean_activity[:,self.params.n1:]
+        #Number of spikes in window...
+        #output = np.sum(h,2)[:,self.params.n1:]
+
         W = self.W
         U = self.U[self.params.n1:, 0:self.params.n1]
         B = self.B
@@ -351,12 +364,17 @@ class LIF_Recurrent(object):
 
         return loss, acc
 
-    def rdd(self, inp, sh, y):
+    def rdd(self, inp, sh, y, h, v, u, deltaT):
         #Get averaged activity for each layer and input
         mean_activity = np.mean(sh, 2)
         mean_inp = np.mean(inp,2)
         hidden = mean_activity[:,0:self.params.n1]
+
+        #Filtered spike trains
         output = mean_activity[:,self.params.n1:]
+        #Number of spikes in window...
+        #output = np.sum(h,2)[:,self.params.n1:]
+
         U = self.U[self.params.n1:, 0:self.params.n1]
         B = self.B
 
@@ -368,11 +386,36 @@ class LIF_Recurrent(object):
         #Backprop
         e2 = np.multiply((output - y_hot), self.sigma_prime(np.matmul(U, hidden.T)).T)
 
-        #The RDD estimator... still to update!
-        lambd = 1
+        #Compute matrix R
+        #Compute the BT vector... 32*20 = 640
+        output_end = sh[:,self.params.n1:].reshape((self.params.batch_size, self.params.n2, -1, deltaT))[:,:,:,-1]
+        n_rdd_bins = output_end.shape[2]
+        y_hot_dup = np.repeat(y_hot[...,None], n_rdd_bins, axis=2)
+        loss_fine = np.sum(np.power((y_hot_dup - output_end),2)/2,1)
+        
+        #Compute RDD indicator function
+        #Dimensions BT x n1
+        #Compute z for the n1 neurons
+        z = np.max(u.reshape((self.params.batch_size, self.params.n, -1, deltaT)), 3).transpose((0,2,1))[:,:,0:self.params.n1]
+        almost_spike = (z < 1) & (z > 1-self.params.p)
+        barely_spike = (z > 1) & (z < 1+self.params.p)
+        
+        n_almost_spike = np.sum(almost_spike, 1)
+        n_barely_spike = np.sum(barely_spike, 1)
+        
+        #Take averages
+        ave_loss_almost = np.zeros(n_barely_spike.shape)
+        ave_loss_barely = np.zeros(n_barely_spike.shape)
+        for idx_b in range(self.params.batch_size):
+            for idx_n in range(self.params.n1):
+                if n_almost_spike[idx_b,idx_n] > 0:
+                    ave_loss_almost[idx_b,idx_n] = np.sum(np.multiply(loss_fine[idx_b,:], almost_spike[idx_b,:,idx_n]))/n_almost_spike[idx_b,idx_n]
+                if n_barely_spike[idx_b,idx_n] > 0:
+                    ave_loss_barely[idx_b,idx_n] = np.sum(np.multiply(loss_fine[idx_b,:], barely_spike[idx_b,:,idx_n]))/n_barely_spike[idx_b,idx_n]
+        causal_effect = ave_loss_barely - ave_loss_almost
 
         #Feedback weight updates
-        gradB = np.multiply((np.matmul(e2, B) - lambd), e2)
+        gradB = np.matmul(e2.T, (np.matmul(e2, B) - causal_effect))
         B -= self.params.eta_B*gradB
 
         loss = np.mean(np.power((y_hot - output),2)/2)
@@ -384,23 +427,23 @@ class LIF_Recurrent(object):
         #Simulate a minibatch
         (inp, v, h, u, sh, y) = self.simulate()
         #Update weights
-        loss, acc = self.feedbackalignment(inp, sh, y)
+        loss, acc = self.feedbackalignment(inp, sh, y, h)
         return loss, acc
 
-    def train_RDD(self):
+    def train_RDD(self, deltaT):
         #Simulate a minibatch
-        (inp, v, h, u, sh, y) = self.simulate()
+        (inp, v, h, u, sh, y) = self.simulate(deltaT)
         #Update feedback weights
-        loss, acc = self.rdd(inp, sh, y)
+        loss, acc = self.rdd(inp, sh, y, h, v, u, deltaT)
         #Update remaining weights
-        loss, acc = self.feedbackalignment(inp, sh, y)
+        loss, acc = self.feedbackalignment(inp, sh, y, h)
         return loss, acc
 
     def train_just_RDD(self):
         #Simulate a minibatch
-        (inp, v, h, u, sh, y) = self.simulate()
+        (inp, v, h, u, sh, y) = self.simulate(self.params.deltaT)
         #Update feedback weights
-        loss, acc = self.rdd(inp, sh, y)
+        loss, acc = self.rdd(inp, sh, y, h, v, u)
         return loss, acc
 
     def eval(self):
