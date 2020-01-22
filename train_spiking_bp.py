@@ -23,34 +23,37 @@ M = 1      #Number of repetitions
 N = 2000    #Number of iterations
 batch_size = 32
 
-model_out = './results/spiking_bp_M_%d_N_%d_batchsize_%d.pkl'%(M, N, batch_size)
-results_out = './results/spiking_bp_M_%d_N_%d_batchsize_%d_results.pkl'%(M, N, batch_size)
+model_out = './results/valeta_valsigma_spiking_bp_M_%d_N_%d_batchsize_%d.pkl'%(M, N, batch_size)
+results_out = './results/valeta_valsigma_spiking_bp_M_%d_N_%d_batchsize_%d_results.pkl'%(M, N, batch_size)
 
 val_eta= np.logspace(-1,0,6)
-losses = np.zeros((M,N,val_eta.shape[0]))
-accs = np.zeros((M,N,val_eta.shape[0]))
-alignments = np.zeros((M,N,val_eta.shape[0]))
-frob_errs = np.zeros((M,N,val_eta.shape[0]))
+val_sigma = np.logspace(-1,2,6)
+losses = np.zeros((M,N,val_sigma.shape[0],val_eta.shape[0]))
+accs = np.zeros((M,N,val_sigma.shape[0],val_eta.shape[0]))
+alignments = np.zeros((M,N,val_sigma.shape[0],val_eta.shape[0]))
+frob_errs = np.zeros((M,N,val_sigma.shape[0],val_eta.shape[0]))
 
-print("Validating over:",val_eta)
-for count_eta in range(val_eta.shape[0]):
-    for i in range(M):
-        print("Repeat: %d/%d"%(i+1,M))
-        params = ParamsLIF_Recurrent(exp_filter,eta = val_eta[count_eta], dt = dt, batch_size = batch_size)
-        lif = LIF_Recurrent(params, t = t, parallel = parallel)
-        for j in range(N):
-            print("Iteration: %d"%j)
-            train_loss, train_acc = lif.train_BP()
-            print("Training loss: %f, training accuracy: %f"%(train_loss, train_acc))
-            losses[i,j,count_eta] = train_loss
-            accs[i,j,count_eta] = train_acc
+print("Validating over learnining:",val_eta,"and\n standard deviation of noise:",val_sigma)
+for count_sigma in range(val_sigma.shape[0]):
+    for count_eta in range(val_eta.shape[0]):
+        for i in range(M):
+            print("Repeat: %d/%d"%(i+1,M))
+            params = ParamsLIF_Recurrent(exp_filter,eta = val_eta[count_eta], dt = dt, batch_size = batch_size, 
+                                         sigma = val_sigma[count_sigma])
+            lif = LIF_Recurrent(params, t = t, parallel = parallel)
+            for j in range(N):
+                print("Iteration: %d"%j)
+                train_loss, train_acc = lif.train_BP()
+                print("Training loss: %f, training accuracy: %f"%(train_loss, train_acc))
+                losses[i,j,count_sigma,count_eta] = train_loss
+                accs[i,j,count_sigma,count_eta] = train_acc
 
-        #Save weights and results with each run...
-        lif.save(model_out)
-        to_save = {
-            'losses': losses,
-            'accs': accs,
-            'alignment': alignments,
-            'frob_errs': frob_errs
-        }
-        pickle.dump(to_save, open(results_out, "wb"))
+            #Save weights and results with each run...
+            lif.save(model_out)
+            to_save = {
+                'losses': losses,
+                'accs': accs,
+                'alignment': alignments,
+                'frob_errs': frob_errs
+            }
+            pickle.dump(to_save, open(results_out, "wb"))
