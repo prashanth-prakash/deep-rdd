@@ -23,8 +23,8 @@ M = 1      #Number of repetitions
 N = 2000    #Number of iterations
 batch_size = 32
 
-model_out = './results/valeta_valsigma_spiking_bp_M_%d_N_%d_batchsize_%d.pkl'%(M, N, batch_size)
-results_out = './results/valeta_valsigma_spiking_bp_M_%d_N_%d_batchsize_%d_results.pkl'%(M, N, batch_size)
+model_out = './results/run2_valeta_valsigma_spiking_bp_M_%d_N_%d_batchsize_%d.pkl'%(M, N, batch_size)
+results_out = './results/run2_valeta_valsigma_spiking_bp_M_%d_N_%d_batchsize_%d_results.pkl'%(M, N, batch_size)
 
 val_eta= np.logspace(-1,0,6)
 val_sigma = np.logspace(-1,2,6)

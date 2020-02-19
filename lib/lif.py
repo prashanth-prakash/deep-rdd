@@ -3,7 +3,7 @@ import numpy as np
 import numpy.random as rand
 import scipy
 
-import cPickle, gzip
+import pickle, gzip
 import random
 from scipy.integrate import quadrature, quad
 import pickle
@@ -12,7 +12,7 @@ import multiprocessing
 
 # Load the dataset
 f = gzip.open('./mnist.pkl.gz', 'rb')
-train_set, valid_set, test_set = cPickle.load(f)
+train_set, valid_set, test_set = pickle.load(f,encoding = 'latin1')
 f.close()
 
 def mnist_spike(lamba, D, kernel, test_data = False):
@@ -59,7 +59,7 @@ def convolve_online_v2(s, sp_idx, time_idx, kernel, t_offset):
 
 class ParamsLIF_Recurrent(object):    
     def __init__(self, kernel, dt = 0.001, tr = 0.003, mu = 1, reset = 0, xsigma = 1, n1 = 100, n2 = 10, tau = 1,
-        c = 0.99, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 5e-1, eta_B = 1,
+        c = 0.01, sigma = 20, sigma1 = 10, sigma2 = 2, batch_size = 32, n_input = 784, eta = 5e-1, eta_B = 1,
         p = 0.2):
 
         self.dt = dt                    #Step size
@@ -163,8 +163,8 @@ class LIF_Recurrent(object):
 
         #Generate new noise with each sim
         xi = self.params.sigma*rand.randn(self.params.batch_size, self.params.n1+1, self.T)/np.sqrt(self.params.tau)
-        xi[0,:] = xi[0,:]*np.sqrt(self.params.c)
-        xi[1:,:] = xi[1:,:]*np.sqrt(1-self.params.c)
+        xi[:,0,:] = xi[:,0,:]*np.sqrt(self.params.c)
+        xi[:,1:,:] = xi[:,1:,:]*np.sqrt(1-self.params.c)
         xi_l2 = self.params.sigma*rand.randn(self.params.batch_size, self.params.n2, self.T)/np.sqrt(self.params.tau)
 
         #Run through each item in batch
@@ -228,8 +228,8 @@ class LIF_Recurrent(object):
 
         #Generate new noise with each sim
         xi = self.params.sigma*rand.randn(self.params.batch_size, self.params.n1+1, self.T)/np.sqrt(self.params.tau)
-        xi[0,:] = xi[0,:]*np.sqrt(self.params.c)
-        xi[1:,:] = xi[1:,:]*np.sqrt(1-self.params.c)
+        xi[:,0,:] = xi[:,0,:]*np.sqrt(self.params.c)
+        xi[:,1:,:] = xi[:,1:,:]*np.sqrt(1-self.params.c)
         xi_l2 = self.params.sigma*rand.randn(self.params.batch_size, self.params.n2, self.T)/np.sqrt(self.params.tau)
 
         #Run a number of simulations in parallel
